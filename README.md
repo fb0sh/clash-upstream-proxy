@@ -2,6 +2,13 @@
 mihomo dialer上游代理
 
 必须使用mihomo内核，支持dialer-proxy
+```bash
+DIRECT 			电脑-> INTERNET
+校园网SOCKS5 	电脑->SOCKS5->INTERNET
+机场原始池 		电脑->机场节点->INTERNET
+校园穿透池 		电脑->SOCKS5->机场节点->INTERNET
+```
+
 
 ```js
 function main(config) {
