@@ -5,152 +5,116 @@ mihomo dialer上游代理
 
 ```js
 function main(config) {
-  // ================= 1. 核心配置区域 =================
-  const staticProxyConfig = {
-    name: "🔒 静态IP (出口)",
-    server: "xxx.xxx.xxx.xxx",
+  // ================= 1. 核心底座配置 =================
+  const schoolSocksNode = {
+    name: "🔒 校园网SOCKS5出口",
+    server: "xxx.xxx.xxx.xxx", // 学校跳板IP
     port: 8080,
-    username: "xxx",
-    password: "xxx",
+    username: "floatctf",
+    password: "floatctf",
     type: "socks5",
-    udp: true,
-    "skip-cert-verify": true, // 优化：跳过证书验证，提高链式代理连通性
+    udp: false,
+    "skip-cert-verify": true
   };
 
-  const groupAirportName = "✈️ 机场中转池";
   const groupFinalName = "🚀 最终出口选择";
+  const groupChainedName = "🏫 校内穿透池 (走SOCKS5)";
+  const groupRawName = "✈️ 机场原始池 (直连机场)";
 
-  // ================= 2. 规则优化 (使用 GEOSITE 替代冗长列表) =================
-  // 优化点 1: 移除硬编码的几百个域名，使用 Meta 内核的 GEOSITE 数据库
+  // ================= 2. 基础直连规则 (防止死循环) =================
   const optimizedDirectRules = [
-    // --- 强制直连与局域网 ---
     "GEOSITE,private,DIRECT",
-    "GEOSITE,category-ads-all,REJECT", // 顺便拦截一下广告
-
-    // --- IP 段 (核心网络) ---
+    `IP-CIDR,${schoolSocksNode.server}/32,DIRECT,no-resolve`, 
     "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-    "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
-    "IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
-
-    // --- 进程匹配 ---
-    "PROCESS-NAME,Thunder,DIRECT",
-    "PROCESS-NAME,Transmission,DIRECT",
-    "PROCESS-NAME,uTorrent,DIRECT",
-    "PROCESS-NAME,qBittorrent,DIRECT",
-    "PROCESS-NAME,aria2c,DIRECT",
-
-    // --- 核心优化：国内域名统配 ---
-    // 包含 baidu, qq, alibaba, apple.cn, microsoft.cn 等所有国内常见域名
     "GEOSITE,cn,DIRECT",
-
-    // --- 游戏平台国内CDN ---
-    "GEOSITE,steam@cn,DIRECT",
-    "GEOSITE,category-games@cn,DIRECT",
-
-    // --- 兜底国内 IP ---
     "GEOIP,CN,DIRECT",
   ];
 
-  // ================= 3. 提取与构建节点 (优化节点清洗) =================
-
-  // 优化点 3: 过滤节点，排除特殊节点和静态IP自身，防止循环引用
-  // 只提取出网协议节点 (SS/VMess/Trojan/HTTP/Socks5等)，排除 DIRECT/REJECT 等
-  const validNodeTypes = [
-    "ss",
-    "vmess",
-    "vless",
-    "trojan",
-    "hysteria",
-    "hysteria2",
-    "tuic",
-    "ssr",
-    "snell",
-    "socks5",
-    "http",
-  ];
-
-  // 确保 config.proxies 存在
+  // ================= 3. 提取并克隆节点 =================
   if (!config.proxies) config.proxies = [];
+  config.proxies.unshift(schoolSocksNode);
 
-  const airportProxies = config.proxies
-    .filter(
-      (p) =>
-        validNodeTypes.includes(p.type) && p.name !== staticProxyConfig.name
-    )
-    .map((p) => p.name);
+  const rawAirportNodes = [];
+  const chainedAirportNodes = [];
+  const validNodeTypes = ["ss", "vmess", "vless", "trojan", "hysteria2", "ssr", "socks5"];
 
-  // 防错：如果没找到任何节点，给一个 DIRECT 防止报错
-  if (airportProxies.length === 0) airportProxies.push("DIRECT");
+  config.proxies.forEach((p) => {
+    if (p.name !== schoolSocksNode.name && validNodeTypes.includes(p.type)) {
+      rawAirportNodes.push(p.name);
+      const clonedNode = {
+        ...p,
+        name: p.name + " [S5中转]", 
+        "dialer-proxy": schoolSocksNode.name
+      };
+      config.proxies.push(clonedNode);
+      chainedAirportNodes.push(clonedNode.name);
+    }
+  });
 
-  // 添加静态 IP (设置 dialer-proxy 指向机场池)
-  staticProxyConfig["dialer-proxy"] = groupAirportName;
-  // 使用 unshift 将静态节点加到列表最前，方便调试
-  config.proxies.unshift(staticProxyConfig);
+  // ================= 4. 分组逻辑处理 (核心修复点) =================
+  
+  // A. 保存旧的代理组名称，防止 Rules 报错
+  const oldGroupNames = config["proxy-groups"] ? config["proxy-groups"].map(g => g.name) : [];
 
-  // ================= 4. 分组策略优化 (自动容灾) =================
-
-  config["proxy-groups"] = [
+  // B. 定义我们的核心管理组
+  const masterGroups = [
     {
       name: groupFinalName,
       type: "select",
-      proxies: [
-        staticProxyConfig.name, // 默认：走静态IP链式代理
-        groupAirportName, // 备用：不走静态IP，直接走机场
-      ],
+      proxies: [groupChainedName, groupRawName, schoolSocksNode.name, "DIRECT"]
     },
     {
-      // 优化点 2: 将 Select 改为 url-test，实现自动容灾
-      // 静态 IP 依赖这个池子出网，必须保证这个池子里的节点永远是通的
-      name: groupAirportName,
+      name: groupChainedName,
       type: "url-test",
       url: "http://www.gstatic.com/generate_204",
       interval: 300,
-      tolerance: 150,
-      lazy: true,
-      proxies: airportProxies,
+      proxies: chainedAirportNodes.length > 0 ? chainedAirportNodes : ["DIRECT"]
     },
+    {
+      name: groupRawName,
+      type: "select",
+      proxies: rawAirportNodes.length > 0 ? rawAirportNodes : ["DIRECT"]
+    }
   ];
 
-  // ================= 5. 规则逻辑优化 (高效清洗) =================
+  // C. 关键修复：修改旧的代理组，让它们指向 groupFinalName
+  // 这样无论规则是找 YouTube 还是 Netflix，最终都会流向我们的总开关
+  if (config["proxy-groups"]) {
+    config["proxy-groups"].forEach(group => {
+      // 如果这个组不是我们新建的三个主控组，就清空它的成员，只指向 Final
+      if (![groupFinalName, groupChainedName, groupRawName].includes(group.name)) {
+        group.proxies = [groupFinalName, "DIRECT"];
+        group.type = "select"; // 强制改为 select 提高稳定性
+      }
+    });
+    // 把主控组塞到最前面
+    config["proxy-groups"] = [...masterGroups, ...config["proxy-groups"]];
+  } else {
+    config["proxy-groups"] = masterGroups;
+  }
 
-  // 优化点 4: 更高效的规则合并与清洗逻辑
+  // ================= 5. 规则逻辑重定向 =================
   const finalRules = [...optimizedDirectRules];
-
-  if (config.rules && config.rules.length > 0) {
+  if (config.rules) {
     config.rules.forEach((rule) => {
-      // 快速分割
       const parts = rule.split(",");
       if (parts.length < 2) return;
-
-      const ruleType = parts[0].trim().toUpperCase();
-      // 获取策略部分（处理 no-resolve 的情况）
-      const isNoResolve =
-        parts[parts.length - 1].trim().toLowerCase() === "no-resolve";
-      const policyIndex = isNoResolve ? parts.length - 2 : parts.length - 1;
-      const originalPolicy = parts[policyIndex].trim();
-
-      // 逻辑：保留 DIRECT 和 REJECT，其他的全部重定向到 groupFinalName
-      if (
-        originalPolicy === "DIRECT" ||
-        originalPolicy === "REJECT" ||
-        originalPolicy.startsWith("REJECT")
-      ) {
+      const originalPolicy = parts[parts.length - 1].trim();
+      
+      // 如果规则原本就是直连或拒绝，保留之
+      if (originalPolicy.toUpperCase() === "DIRECT" || originalPolicy.toUpperCase().startsWith("REJECT")) {
         finalRules.push(rule);
-      } else if (ruleType !== "MATCH") {
-        // 修改目标策略
-        parts[policyIndex] = groupFinalName;
-        finalRules.push(parts.join(","));
+      } else {
+        // 如果原本是走某个组，保留原样（因为我们在第4步已经把那些组重定向到 Final 了）
+        finalRules.push(rule);
       }
     });
   }
 
-  // 确保最后一条是 MATCH 且指向最终分组
-  finalRules.push(`MATCH,${groupFinalName}`);
-
-  // 应用新规则
+  // 兜底规则
+  if (!finalRules.some(r => r.startsWith("MATCH"))) {
+    finalRules.push(`MATCH,${groupFinalName}`);
+  }
   config.rules = finalRules;
 
   return config;
