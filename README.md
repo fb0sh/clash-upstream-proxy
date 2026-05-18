@@ -11,7 +11,7 @@ DIRECT          [本地直连] 电脑 -> 目标网站 (用于国内流量)
 
 ## Server
 ```bash
-ssserver --server-addr 0.0.0.0:8080 --encrypt-method chacha20-ietf-poly1305 --password floatctf
+ssserver --server-addr 0.0.0.0:8080 --encrypt-method chacha20-ietf-poly1305 --password password
 ```
 
 ## client
