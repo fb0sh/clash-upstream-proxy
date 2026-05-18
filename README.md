@@ -129,3 +129,16 @@ function main(config) {
   return config;
 }
 ```
+
+
+```yaml
+proxies:
+  - name: "floatctf"
+    type: ss
+    server: 120.95.81.151
+    port: 8080
+    cipher: chacha20-ietf-poly1305
+    password: "password"
+    udp: true
+    udp-over-tcp: true  # 核心大招：强制把游戏的 UDP 打包进 TCP 发送，破解云厂商的 UDP 封锁！
+```
